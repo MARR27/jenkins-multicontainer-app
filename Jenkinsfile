@@ -109,17 +109,35 @@ pipeline {
             steps {
                 echo 'Ejecutando prueba end-to-end en la rama main...'
 
-                sh """
-                    docker compose -f ${DOCKER_COMPOSE_FILE} up -d --build
-                    sleep 10
-                """
+               sh """
+    docker compose -f ${DOCKER_COMPOSE_FILE} down -v || true
+    docker compose -f ${DOCKER_COMPOSE_FILE} up -d --build
+"""
 
-                sh """
-                    curl -f http://localhost:3000/health
-                    curl -f -X POST http://localhost:3000/users \
-                        -H "Content-Type: application/json" \
-                        -d '{"name":"E2E Test","email":"e2e@test.com"}'
-                """
+sh """
+    echo "Esperando a que la aplicación responda en /health..."
+
+    for i in \$(seq 1 30); do
+        if curl -f http://localhost:3000/health; then
+            echo "La aplicación ya está lista."
+            exit 0
+        fi
+
+        echo "Intento \$i: la aplicación aún no responde. Esperando..."
+        sleep 3
+    done
+
+    echo "La aplicación no respondió después del tiempo esperado."
+    docker compose -f ${DOCKER_COMPOSE_FILE} ps
+    docker compose -f ${DOCKER_COMPOSE_FILE} logs app
+    exit 1
+"""
+
+sh """
+    curl -f -X POST http://localhost:3000/users \
+        -H "Content-Type: application/json" \
+        -d '{"name":"E2E Test","email":"e2e@test.com"}'
+"""
             }
 
             post {

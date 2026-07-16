@@ -181,6 +181,7 @@ pipeline {
         }
     }
 
+//
     post {
         success {
             echo 'Pipeline multi-contenedor completado exitosamente.'

@@ -340,6 +340,93 @@ pipeline {
                 }
             }
         }
+
+        stage('Pruebas de Resiliencia') {
+            when {
+                branch 'main'
+            }
+
+            steps {
+                echo 'Ejecutando prueba de resiliencia ante caída de Redis...'
+
+                sh """
+                    docker compose -f ${DOCKER_COMPOSE_FILE} down -v || true
+                    docker compose -f ${DOCKER_COMPOSE_FILE} up -d --build
+                """
+
+                sh """
+                    echo "Esperando a que la aplicación responda antes de simular falla..."
+
+                    for i in \$(seq 1 30); do
+                        if docker compose -f ${DOCKER_COMPOSE_FILE} exec -T app node -e "
+                            fetch('http://localhost:3000/health')
+                                .then(response => {
+                                    if (!response.ok) process.exit(1);
+                                    return response.json();
+                                })
+                                .then(data => {
+                                    console.log('Estado inicial:', data);
+                                    process.exit(0);
+                                })
+                                .catch(() => process.exit(1));
+                        "; then
+                            echo "La aplicación respondió antes de la falla."
+                            exit 0
+                        fi
+
+                        echo "Intento \$i: la aplicación aún no responde. Esperando..."
+                        sleep 3
+                    done
+
+                    echo "La aplicación no respondió antes de la prueba de resiliencia."
+                    docker compose -f ${DOCKER_COMPOSE_FILE} ps
+                    docker compose -f ${DOCKER_COMPOSE_FILE} logs app
+                    exit 1
+                """
+
+                sh """
+                    echo "Simulando falla: deteniendo Redis..."
+                    docker compose -f ${DOCKER_COMPOSE_FILE} stop redis
+                    sleep 5
+                """
+
+                sh """
+                    echo "Verificando que la aplicación siga respondiendo aunque Redis esté detenido..."
+
+                    docker compose -f ${DOCKER_COMPOSE_FILE} exec -T app node -e "
+                        fetch('http://localhost:3000/health')
+                            .then(response => {
+                                if (!response.ok) process.exit(1);
+                                return response.json();
+                            })
+                            .then(data => {
+                                console.log('Estado con Redis detenido:', data);
+                                process.exit(0);
+                            })
+                            .catch(error => {
+                                console.error('La aplicación no respondió sin Redis:', error);
+                                process.exit(1);
+                            });
+                    "
+                """
+
+                sh """
+                    echo "Restaurando Redis..."
+                    docker compose -f ${DOCKER_COMPOSE_FILE} up -d redis
+                    sleep 10
+
+                    echo "Estado final de los servicios:"
+                    docker compose -f ${DOCKER_COMPOSE_FILE} ps
+                """
+            }
+
+            post {
+                always {
+                    echo 'Limpiando contenedores de resiliencia...'
+                    sh "docker compose -f ${DOCKER_COMPOSE_FILE} down -v || true"
+                }
+            }
+        }
     }
 
     post {
@@ -362,6 +449,7 @@ Servicios validados:
 - Aplicación Node.js
 - Pruebas de rendimiento básicas
 - Monitoreo de servicios
+- Pruebas de resiliencia
 """
             )
         }

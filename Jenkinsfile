@@ -106,39 +106,71 @@ pipeline {
                 branch 'main'
             }
 
-            steps {
-                echo 'Ejecutando prueba end-to-end en la rama main...'
+           steps {
+    echo 'Ejecutando prueba end-to-end en la rama main...'
 
-               sh """
-    docker compose -f ${DOCKER_COMPOSE_FILE} down -v || true
-    docker compose -f ${DOCKER_COMPOSE_FILE} up -d --build
-"""
+    sh """
+        docker compose -f ${DOCKER_COMPOSE_FILE} down -v || true
+        docker compose -f ${DOCKER_COMPOSE_FILE} up -d --build
+    """
 
-sh """
-    echo "Esperando a que la aplicación responda en /health..."
+    sh """
+        echo "Esperando a que la aplicación responda dentro del contenedor app..."
 
-    for i in \$(seq 1 30); do
-        if curl -f http://localhost:3000/health; then
-            echo "La aplicación ya está lista."
-            exit 0
-        fi
+        for i in \$(seq 1 30); do
+            if docker compose -f ${DOCKER_COMPOSE_FILE} exec -T app node -e "
+                fetch('http://localhost:3000/health')
+                    .then(response => {
+                        if (!response.ok) process.exit(1);
+                        return response.json();
+                    })
+                    .then(data => {
+                        console.log(data);
+                        process.exit(0);
+                    })
+                    .catch(() => process.exit(1));
+            "; then
+                echo "La aplicación ya está lista."
+                exit 0
+            fi
 
-        echo "Intento \$i: la aplicación aún no responde. Esperando..."
-        sleep 3
-    done
+            echo "Intento \$i: la aplicación aún no responde. Esperando..."
+            sleep 3
+        done
 
-    echo "La aplicación no respondió después del tiempo esperado."
-    docker compose -f ${DOCKER_COMPOSE_FILE} ps
-    docker compose -f ${DOCKER_COMPOSE_FILE} logs app
-    exit 1
-"""
+        echo "La aplicación no respondió después del tiempo esperado."
+        docker compose -f ${DOCKER_COMPOSE_FILE} ps
+        docker compose -f ${DOCKER_COMPOSE_FILE} logs app
+        exit 1
+    """
 
-sh """
-    curl -f -X POST http://localhost:3000/users \
-        -H "Content-Type: application/json" \
-        -d '{"name":"E2E Test","email":"e2e@test.com"}'
-"""
-            }
+    sh """
+        docker compose -f ${DOCKER_COMPOSE_FILE} exec -T app node -e "
+            fetch('http://localhost:3000/users', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    name: 'E2E Test',
+                    email: 'e2e@test.com'
+                })
+            })
+            .then(response => {
+                if (!response.ok) process.exit(1);
+                return response.json();
+            })
+            .then(data => {
+                console.log(data);
+                process.exit(0);
+            })
+            .catch(error => {
+                console.error(error);
+                process.exit(1);
+            });
+        "
+    """
+}
 
             post {
                 always {

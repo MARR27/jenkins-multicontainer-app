@@ -201,6 +201,103 @@ pipeline {
                 }
             }
         }
+
+        stage('Pruebas de Rendimiento') {
+            when {
+                branch 'main'
+            }
+
+            steps {
+                echo 'Ejecutando pruebas de rendimiento básicas contra /health...'
+
+                sh """
+                    docker compose -f ${DOCKER_COMPOSE_FILE} down -v || true
+                    docker compose -f ${DOCKER_COMPOSE_FILE} up -d --build
+                """
+
+                sh """
+                    echo "Esperando a que la aplicación responda dentro del contenedor app..."
+
+                    for i in \$(seq 1 30); do
+                        if docker compose -f ${DOCKER_COMPOSE_FILE} exec -T app node -e "
+                            fetch('http://localhost:3000/health')
+                                .then(response => {
+                                    if (!response.ok) process.exit(1);
+                                    return response.json();
+                                })
+                                .then(data => {
+                                    console.log(data);
+                                    process.exit(0);
+                                })
+                                .catch(() => process.exit(1));
+                        "; then
+                            echo "La aplicación ya está lista para la prueba de rendimiento."
+                            exit 0
+                        fi
+
+                        echo "Intento \$i: la aplicación aún no responde. Esperando..."
+                        sleep 3
+                    done
+
+                    echo "La aplicación no respondió después del tiempo esperado."
+                    docker compose -f ${DOCKER_COMPOSE_FILE} ps
+                    docker compose -f ${DOCKER_COMPOSE_FILE} logs app
+                    exit 1
+                """
+
+                sh """
+                    echo "Enviando 100 solicitudes al endpoint /health..."
+
+                    docker compose -f ${DOCKER_COMPOSE_FILE} exec -T app node -e "
+                        const totalRequests = 100;
+                        const start = Date.now();
+
+                        async function runPerformanceTest() {
+                            let successfulRequests = 0;
+                            let failedRequests = 0;
+
+                            for (let i = 1; i <= totalRequests; i++) {
+                                try {
+                                    const response = await fetch('http://localhost:3000/health');
+
+                                    if (response.ok) {
+                                        successfulRequests++;
+                                    } else {
+                                        failedRequests++;
+                                    }
+                                } catch (error) {
+                                    failedRequests++;
+                                }
+                            }
+
+                            const duration = Date.now() - start;
+
+                            console.log('Resultados de rendimiento:');
+                            console.log('Solicitudes totales:', totalRequests);
+                            console.log('Solicitudes exitosas:', successfulRequests);
+                            console.log('Solicitudes fallidas:', failedRequests);
+                            console.log('Tiempo total en ms:', duration);
+                            console.log('Promedio por solicitud en ms:', duration / totalRequests);
+
+                            if (failedRequests > 0) {
+                                process.exit(1);
+                            }
+
+                            process.exit(0);
+                        }
+
+                        runPerformanceTest();
+                    "
+                """
+            }
+
+            post {
+                always {
+                    echo 'Limpiando contenedores de pruebas de rendimiento...'
+                    sh "docker compose -f ${DOCKER_COMPOSE_FILE} down -v || true"
+                }
+            }
+        }
     }
 
     post {
@@ -221,6 +318,7 @@ Servicios validados:
 - PostgreSQL
 - Redis
 - Aplicación Node.js
+- Pruebas de rendimiento básicas
 """
             )
         }

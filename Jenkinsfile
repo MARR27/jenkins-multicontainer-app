@@ -106,71 +106,93 @@ pipeline {
                 branch 'main'
             }
 
-           steps {
-    echo 'Ejecutando prueba end-to-end en la rama main...'
+            steps {
+                echo 'Ejecutando prueba end-to-end en la rama main...'
 
-    sh """
-        docker compose -f ${DOCKER_COMPOSE_FILE} down -v || true
-        docker compose -f ${DOCKER_COMPOSE_FILE} up -d --build
-    """
+                sh """
+                    docker compose -f ${DOCKER_COMPOSE_FILE} down -v || true
+                    docker compose -f ${DOCKER_COMPOSE_FILE} up -d --build
+                """
 
-    sh """
-        echo "Esperando a que la aplicación responda dentro del contenedor app..."
+                sh """
+                    echo "Esperando a que la aplicación responda dentro del contenedor app..."
 
-        for i in \$(seq 1 30); do
-            if docker compose -f ${DOCKER_COMPOSE_FILE} exec -T app node -e "
-                fetch('http://localhost:3000/health')
-                    .then(response => {
-                        if (!response.ok) process.exit(1);
-                        return response.json();
-                    })
-                    .then(data => {
-                        console.log(data);
-                        process.exit(0);
-                    })
-                    .catch(() => process.exit(1));
-            "; then
-                echo "La aplicación ya está lista."
-                exit 0
-            fi
+                    for i in \$(seq 1 30); do
+                        if docker compose -f ${DOCKER_COMPOSE_FILE} exec -T app node -e "
+                            fetch('http://localhost:3000/health')
+                                .then(response => {
+                                    if (!response.ok) process.exit(1);
+                                    return response.json();
+                                })
+                                .then(data => {
+                                    console.log(data);
+                                    process.exit(0);
+                                })
+                                .catch(() => process.exit(1));
+                        "; then
+                            echo "La aplicación ya está lista."
+                            exit 0
+                        fi
 
-            echo "Intento \$i: la aplicación aún no responde. Esperando..."
-            sleep 3
-        done
+                        echo "Intento \$i: la aplicación aún no responde. Esperando..."
+                        sleep 3
+                    done
 
-        echo "La aplicación no respondió después del tiempo esperado."
-        docker compose -f ${DOCKER_COMPOSE_FILE} ps
-        docker compose -f ${DOCKER_COMPOSE_FILE} logs app
-        exit 1
-    """
+                    echo "La aplicación no respondió después del tiempo esperado."
+                    docker compose -f ${DOCKER_COMPOSE_FILE} ps
+                    docker compose -f ${DOCKER_COMPOSE_FILE} logs app
+                    exit 1
+                """
 
-    sh """
-        docker compose -f ${DOCKER_COMPOSE_FILE} exec -T app node -e "
-            fetch('http://localhost:3000/users', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({
-                    name: 'E2E Test',
-                    email: 'e2e@test.com'
-                })
-            })
-            .then(response => {
-                if (!response.ok) process.exit(1);
-                return response.json();
-            })
-            .then(data => {
-                console.log(data);
-                process.exit(0);
-            })
-            .catch(error => {
-                console.error(error);
-                process.exit(1);
-            });
-        "
-    """
-}
+                sh """
+                    echo "Preparando tabla users para prueba E2E..."
+
+                    docker compose -f ${DOCKER_COMPOSE_FILE} exec -T postgres psql -U testuser -d testdb -c "
+                        CREATE TABLE IF NOT EXISTS users (
+                            id SERIAL PRIMARY KEY,
+                            name VARCHAR(100) NOT NULL,
+                            email VARCHAR(100) UNIQUE NOT NULL
+                        );
+                    "
+
+                    docker compose -f ${DOCKER_COMPOSE_FILE} exec -T postgres psql -U testuser -d testdb -c "
+                        DELETE FROM users WHERE email = 'e2e@test.com';
+                    "
+                """
+
+                sh """
+                    echo "Ejecutando POST /users desde el contenedor app..."
+
+                    docker compose -f ${DOCKER_COMPOSE_FILE} exec -T app node -e "
+                        fetch('http://localhost:3000/users', {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json'
+                            },
+                            body: JSON.stringify({
+                                name: 'E2E Test',
+                                email: 'e2e@test.com'
+                            })
+                        })
+                        .then(response => {
+                            if (!response.ok) {
+                                console.error('Respuesta HTTP no válida:', response.status);
+                                process.exit(1);
+                            }
+
+                            return response.json();
+                        })
+                        .then(data => {
+                            console.log(data);
+                            process.exit(0);
+                        })
+                        .catch(error => {
+                            console.error(error);
+                            process.exit(1);
+                        });
+                    "
+                """
+            }
 
             post {
                 always {
@@ -181,7 +203,6 @@ pipeline {
         }
     }
 
-//
     post {
         success {
             echo 'Pipeline multi-contenedor completado exitosamente.'
